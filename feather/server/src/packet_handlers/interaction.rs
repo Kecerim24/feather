@@ -1,4 +1,5 @@
 use crate::{ClientId, NetworkId, Server};
+use base::{BlockKind, ItemStack, Item};
 use base::inventory::{SLOT_HOTBAR_OFFSET, SLOT_OFFHAND};
 use common::entities::player::HotbarSlot;
 use common::interactable::InteractableRegistry;
@@ -120,7 +121,25 @@ pub fn handle_player_digging(
     log::trace!("Got player digging with status {:?}", packet.status);
     match packet.status {
         PlayerDiggingStatus::StartDigging | PlayerDiggingStatus::CancelDigging => {
-            game.break_block(packet.position);
+            let block = game.block(packet.position).unwrap();
+            
+            let window = game.ecs.get::<Window>(player)?;
+
+            let hotbar_slot = game.ecs.get::<HotbarSlot>(player)?.get();
+
+            let hotbar_index = SLOT_HOTBAR_OFFSET + hotbar_slot;
+            let offhand_index = SLOT_OFFHAND;
+
+            let mut hotbar_item = window.item(hotbar_index)?;
+            
+            let breaking_speed = block_breaking_speed(block.kind(),hotbar_item.item_kind());
+            let speed_in_ticks = if breaking_speed > 1.0 {
+                0
+            } else{
+                (1.0/breaking_speed) as u32
+            };
+            
+
             Ok(())
         }
         PlayerDiggingStatus::SwapItemInHand => {
@@ -147,6 +166,43 @@ pub fn handle_player_digging(
         }
         _ => Ok(()),
     }
+}
+
+pub fn block_breaking_speed(block_kind: BlockKind, held_item: Option<Item>) -> f32{
+    let harvest_tools = block_kind.harvest_tools();
+    let hardeness = block_kind.hardness();
+    let dig_multipliers = block_kind.dig_multipliers();
+
+    let adjusted_hardness = match harvest_tools{
+        Some(tools) => {
+            if held_item.is_none(){
+                5.0
+            } else if tools.contains(held_item.as_ref().unwrap()){
+                1.5
+            } else {
+                5.0
+            }
+        },
+        None => {
+            1.5
+        },
+    }*hardeness;
+
+
+    let mut speed_multiplier = if held_item.is_none(){
+        1.0
+    } else {
+        dig_multipliers.iter()
+        .find(|(i,h)|{*i==held_item.unwrap()}).map(|(_,h)|*h).unwrap_or(1.0)
+    };
+    
+    
+    //TODO: get efficiency from item metadata 
+    let ef_level = 0;
+    if ef_level != 0{
+        speed_multiplier += (ef_level*ef_level + 1) as f32;
+    }
+    speed_multiplier/adjusted_hardness
 }
 
 pub fn handle_interact_entity(
